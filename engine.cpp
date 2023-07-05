@@ -97,12 +97,13 @@ void Engine::setup(Language lang, int graphicsType, const char *scalerName, int 
 		_vid.setDefaultFont();
 	}
 	_script.init();
-	_mix.init();
+	MixerType mixerType = kMixerTypeRaw;
 	switch (_res.getDataType()) {
 	case Resource::DT_DOS:
 	case Resource::DT_AMIGA:
 	case Resource::DT_ATARI:
 	case Resource::DT_ATARI_DEMO:
+		mixerType = kMixerTypeRaw;
 		switch (lang) {
 		case LANG_FR:
 			_vid._stringsTable = Video::_stringsTableFr;
@@ -113,10 +114,33 @@ void Engine::setup(Language lang, int graphicsType, const char *scalerName, int 
 			break;
 		}
 		break;
+	case Resource::DT_WIN31:
+	case Resource::DT_15TH_EDITION:
+	case Resource::DT_20TH_EDITION:
+		mixerType = kMixerTypeWav;
+		break;
+	case Resource::DT_3DO:
+		mixerType = kMixerTypeAiff;
+		break;
+	}
+	_mix.init(mixerType);
+#ifndef BYPASS_PROTECTION
+	switch (_res.getDataType()) {
+	case Resource::DT_DOS:
+		if (!_res._hasPasswordScreen) {
+			break;
+		}
+		/* fall-through */
+	case Resource::DT_AMIGA:
+	case Resource::DT_ATARI:
+	case Resource::DT_WIN31:
+		_partNum = kPartCopyProtection;
+		break;
 	default:
 		break;
 	}
-	if (_res.getDataType() == Resource::DT_3DO && _partNum == 16001) {
+#endif
+	if (_res.getDataType() == Resource::DT_3DO && _partNum == kPartIntro) {
 		_state = kStateLogo3DO;
 	} else {
 		_state = kStateGame;

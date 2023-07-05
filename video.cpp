@@ -424,7 +424,7 @@ static void decode_amiga(const uint8_t *src, uint8_t *dst) {
 
 static void decode_atari(const uint8_t *src, uint8_t *dst) {
 	for (int y = 0; y < 200; ++y) {
-		for (int x = 0; x < 320; x += 8) {
+		for (int x = 0; x < 320; x += 16) {
 			for (int b = 0; b < 16; ++b) {
 				const int mask = 1 << (15 - b);
 				uint8_t color = 0;
@@ -463,9 +463,9 @@ void Video::scaleBitmap(const uint8_t *src, int fmt) {
 		const int h = BITMAP_H * _scalerFactor;
 		const int depth = (fmt == FMT_CLUT) ? 1 : 2;
 		_scaler->scale(_scalerFactor, depth, _scalerBuffer, w * depth, src, BITMAP_W * depth, BITMAP_W, BITMAP_H);
-		_graphics->drawBitmap(0, _scalerBuffer, w, h, fmt);
+		_graphics->drawBitmap(_buffers[0], _scalerBuffer, w, h, fmt);
 	} else {
-		_graphics->drawBitmap(0, src, BITMAP_W, BITMAP_H, fmt);
+		_graphics->drawBitmap(_buffers[0], src, BITMAP_W, BITMAP_H, fmt);
 	}
 }
 
@@ -495,7 +495,7 @@ void Video::copyBitmapPtr(const uint8_t *src, uint32_t size) {
 			int w, h;
 			uint8_t *buf = decode_bitmap(src, false, -1, &w, &h);
 			if (buf) {
-				_graphics->drawBitmap(0, buf, w, h, FMT_RGB);
+				_graphics->drawBitmap(_buffers[0], buf, w, h, FMT_RGB);
 				free(buf);
 			}
 		}

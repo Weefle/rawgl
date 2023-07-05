@@ -16,7 +16,7 @@
 
 static const char *atariDemo = "aw.tos";
 
-Resource::Resource(Video *vid, const char *dataDir) 
+Resource::Resource(Video *vid, const char *dataDir)
 	: _vid(vid), _dataDir(dataDir), _currentPart(0), _nextPart(0), _dataType(DT_DOS), _nth(0), _win31(0), _3do(0) {
 	_bankPrefix = "bank";
 	_hasPasswordScreen = true;
@@ -163,7 +163,7 @@ void Resource::readEntries() {
 		}
 		break;
 	case DT_20TH_EDITION:
-		_numMemList = ENTRIES_COUNT;
+		_numMemList = ENTRIES_COUNT_20TH;
 		_nth = ResourceNth::create(20, _dataDir);
 		if (_nth && _nth->init()) {
 			return;
@@ -308,8 +308,9 @@ void Resource::load() {
 			memPtr = _vidCurPtr;
 		} else {
 			memPtr = _scriptCurPtr;
-			if (me->unpackedSize > uint32_t(_vidBakPtr - _scriptCurPtr)) {
-				warning("Resource::load() not enough memory");
+			const uint32_t avail = uint32_t(_vidCurPtr - _scriptCurPtr);
+			if (me->unpackedSize > avail) {
+				warning("Resource::load() not enough memory, available=%d", avail);
 				me->status = STATUS_NULL;
 				continue;
 			}
@@ -357,6 +358,7 @@ void Resource::invalidateAll() {
 		_memList[i].status = STATUS_NULL;
 	}
 	_scriptCurPtr = _memPtrStart;
+	_vid->_currentPal = 0xFF;
 }
 
 static const uint8_t *getSoundsList3DO(int num) {
@@ -406,7 +408,7 @@ static const int _memListBmp[] = {
 	145, 144, 73, 72, 70, 69, 68, 67, -1
 };
 
-void Resource::update(uint16_t num) {
+void Resource::update(uint16_t num, PreloadSoundProc preloadSound, void *data) {
 	if (num > 16000) {
 		_nextPart = num;
 		return;
@@ -437,7 +439,11 @@ void Resource::update(uint16_t num) {
 		if (num >= 2000) { // preload sounds
 			const uint8_t *soundsList = getSoundsList3DO(num);
 			for (int i = 0; soundsList[i] != 255; ++i) {
-				loadDat(soundsList[i]);
+				const int soundNum = soundsList[i];
+				loadDat(soundNum);
+				if (_memList[soundNum].status == STATUS_LOADED) {
+					preloadSound(data, soundNum, _memList[soundNum].bufPtr);
+				}
 			}
 		} else if (num >= 200) {
 			loadBmp(num);
@@ -621,13 +627,16 @@ void Resource::setupPart(int ptrId) {
 			for (int i = 0; i < 4; ++i) {
 				const int num = _memListParts[ptrId - 16000][i];
 				if (num != 0) {
-					if (_dataType == DT_20TH_EDITION) {
+					if (_dataType == DT_20TH_EDITION && 0) {
+						// HD assets
 						_nth->preloadDat(ptrId - 16000, i, num);
 					}
 					*segments[i] = loadDat(num);
 				}
 			}
 			_currentPart = ptrId;
+		} else {
+			error("Resource::setupPart() ec=0x%X invalid part", 0xF07);
 		}
 		_scriptBakPtr = _scriptCurPtr;
 		break;
@@ -673,7 +682,7 @@ void Resource::setupPart(int ptrId) {
 void Resource::allocMemBlock() {
 	_memPtrStart = (uint8_t *)malloc(MEM_BLOCK_SIZE);
 	_scriptBakPtr = _scriptCurPtr = _memPtrStart;
-	_vidBakPtr = _vidCurPtr = _memPtrStart + MEM_BLOCK_SIZE - 0x800 * 16;
+	_vidCurPtr = _memPtrStart + MEM_BLOCK_SIZE - (320 * 200 / 2); // 4bpp bitmap
 	_useSegVideo2 = false;
 }
 

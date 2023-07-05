@@ -90,6 +90,10 @@ enum {
 	kPartPassword = 16008
 };
 
+enum {
+	kPaulaFreq = 7159092
+};
+
 struct Ptr {
 	uint8_t *pc;
 	bool byteSwap;
@@ -144,7 +148,7 @@ struct Frac {
 	uint64_t offset;
 
 	void reset(int n, int d) {
-		inc = (n << BITS) / d;
+		inc = (((int64_t)n) << BITS) / d;
 		offset = 0;
 	}
 

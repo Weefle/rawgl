@@ -19,7 +19,7 @@ struct SfxModule {
 	uint16_t curPos;
 	uint8_t curOrder;
 	uint8_t numOrder;
-	uint8_t orderTable[0x80];
+	uint8_t *orderTable;
 	SfxInstrument samples[15];
 };
 
@@ -67,8 +67,8 @@ struct SfxPlayer {
 	void loadSfxModule(uint16_t resNum, uint16_t delay, uint8_t pos);
 	void prepareInstruments(const uint8_t *p);
 	void play(int rate);
-	void mixSamples(int8_t *buf, int len);
-	void readSamples(int8_t *buf, int len);
+	void mixSamples(int16_t *buf, int len);
+	void readSamples(int16_t *buf, int len);
 	void start();
 	void stop();
 	void handleEvents();

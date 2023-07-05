@@ -28,7 +28,7 @@ void Script::init() {
 		_scriptVars[0xDB] = 1;
 		_scriptVars[0xE2] = 1;
 		_scriptVars[0xF2] = 6000;
-	} else {
+	} else if (_res->getDataType() != Resource::DT_15TH_EDITION && _res->getDataType() != Resource::DT_20TH_EDITION) {
 		_scriptVars[VAR_RANDOM_SEED] = time(0);
 #ifdef BYPASS_PROTECTION
 		// these 3 variables are set by the game code
@@ -53,7 +53,7 @@ void Script::op_movConst() {
 
 void Script::op_mov() {
 	uint8_t i = _scriptPtr.fetchByte();
-	uint8_t j = _scriptPtr.fetchByte();	
+	uint8_t j = _scriptPtr.fetchByte();
 	debug(DBG_SCRIPT, "Script::op_mov(0x%02X, 0x%02X)", i, j);
 	_scriptVars[i] = _scriptVars[j];
 }
@@ -103,7 +103,7 @@ void Script::op_ret() {
 	debug(DBG_SCRIPT, "Script::op_ret()");
 	if (_stackPtr == 0) {
 		error("Script::op_ret() ec=0x%X stack underflow", 0x8F);
-	}	
+	}
 	--_stackPtr;
 	_scriptPtr.pc = _res->_segCode + _scriptStackCalls[_stackPtr];
 }
@@ -116,7 +116,7 @@ void Script::op_yieldTask() {
 void Script::op_jmp() {
 	uint16_t off = _scriptPtr.fetchWord();
 	debug(DBG_SCRIPT, "Script::op_jmp(0x%02X)", off);
-	_scriptPtr.pc = _res->_segCode + off;	
+	_scriptPtr.pc = _res->_segCode + off;
 }
 
 void Script::op_installTask() {
@@ -271,7 +271,7 @@ void Script::op_updateDisplay() {
 
 #ifndef BYPASS_PROTECTION
 	// entered protection symbols match the expected values
-	if (_res->_currentPart == 16000 && _scriptVars[0x67] == 1) {
+	if (_res->_currentPart == kPartCopyProtection && _scriptVars[0x67] == 1) {
 		_scriptVars[0xDC] = 33;
 	}
 #endif
@@ -354,6 +354,10 @@ void Script::op_playSound() {
 	snd_playSound(resNum, freq, vol, channel);
 }
 
+static void preloadSoundCb(void *userdata, int soundNum, const uint8_t *data) {
+	((Script *)userdata)->snd_preloadSound(soundNum, data);
+}
+
 void Script::op_updateResources() {
 	uint16_t num = _scriptPtr.fetchWord();
 	debug(DBG_SCRIPT, "Script::op_updateResources(%d)", num);
@@ -362,7 +366,7 @@ void Script::op_updateResources() {
 		_mix->stopAll();
 		_res->invalidateRes();
 	} else {
-		_res->update(num);
+		_res->update(num, preloadSoundCb, this);
 	}
 }
 
@@ -377,10 +381,10 @@ void Script::op_playMusic() {
 void Script::restartAt(int part, int pos) {
 	_ply->stop();
 	_mix->stopAll();
-	if (_res->getDataType() == Resource::DT_20TH_EDITION && part != 16001) {
-		_scriptVars[0xBF] = 1; // difficulty (0 to 2)
+	if (_res->getDataType() == Resource::DT_20TH_EDITION) {
+		_scriptVars[0xBF] = _difficulty; // difficulty (0 to 2)
 		// _scriptVars[0xDB] = 1; // preload sounds (resnum >= 2000)
-		_scriptVars[0xDE] = Graphics::_is1991 ? 0 : 1; // playback remastered sounds (resnum >= 146)
+		_scriptVars[0xDE] = _useRemasteredAudio ? 1 : 0; // playback remastered sounds (resnum >= 146)
 	}
 	if (_res->getDataType() == Resource::DT_DOS && part == kPartCopyProtection) {
 		// VAR(0x54) indicates if the "Out of this World" title screen should be presented
@@ -715,6 +719,27 @@ void Script::inp_handleSpecialKeys() {
 	}
 }
 
+static uint8_t getWavLooping(uint16_t resNum) {
+	switch (resNum) {
+	case 1:
+	case 3:
+	case 8:
+	case 16:
+	case 89:
+	case 97:
+	case 102:
+	case 104:
+	case 106:
+	case 132:
+	case 139: return 1;
+	}
+	return 0;
+}
+
+static int getSoundFreq(uint8_t period) {
+	return kPaulaFreq / (Script::_periodTable[period] * 2);
+}
+
 void Script::snd_playSound(uint16_t resNum, uint8_t freq, uint8_t vol, uint8_t channel) {
 	debug(DBG_SND, "snd_playSound(0x%X, %d, %d, %d)", resNum, freq, vol, channel);
 	if (vol == 0) {
@@ -724,29 +749,35 @@ void Script::snd_playSound(uint16_t resNum, uint8_t freq, uint8_t vol, uint8_t c
 	if (vol > 63) {
 		vol = 63;
 	}
+	if (freq > 39) {
+		freq = 39;
+	}
+	channel &= 3;
 	switch (_res->getDataType()) {
-	case Resource::DT_15TH_EDITION: {
-			uint8_t *buf = _res->loadWav(resNum);
-			if (buf) {
-				_mix->playSoundWav(channel & 3, buf, _freqTable[freq], vol);
-			}
-		}
-		break;
 	case Resource::DT_20TH_EDITION:
+		if (freq != 0) {
+			--freq;
+		}
+		/* fall-through */
+	case Resource::DT_15TH_EDITION:
+		if (freq >= 32) {
+			// Anniversary editions do not have the 170 period
+			//
+			//  [31] dos=19886 20th=19886 amiga=19886 (period 180)
+			//  [32] dos=21056 20th=22372 amiga=21056 (period 170)
+			//  [33] dos=22372 20th=23704 amiga=22372 (period 160)
+			++freq;
+		}
+		/* fall-through */
 	case Resource::DT_WIN31: {
-			// ignore sample rate specified by the script, use .wav header value
 			uint8_t *buf = _res->loadWav(resNum);
 			if (buf) {
-				_mix->playSoundWav(channel & 3, buf, 0, vol);
+				_mix->playSoundWav(channel, buf, getSoundFreq(freq), vol, getWavLooping(resNum));
 			}
 		}
 		break;
-	case Resource::DT_3DO: {
-			MemEntry *me = &_res->_memList[resNum];
-			if (me->status == Resource::STATUS_LOADED) {
-				_mix->playSoundAiff(channel & 3, me->bufPtr, vol);
-			}
-		}
+	case Resource::DT_3DO:
+		_mix->playSoundAiff(channel, resNum, vol);
 		break;
 	case Resource::DT_AMIGA:
 	case Resource::DT_ATARI:
@@ -754,8 +785,7 @@ void Script::snd_playSound(uint16_t resNum, uint8_t freq, uint8_t vol, uint8_t c
 	case Resource::DT_DOS: {
 			MemEntry *me = &_res->_memList[resNum];
 			if (me->status == Resource::STATUS_LOADED) {
-				assert(freq < 40);
-				_mix->playSoundRaw(channel & 3, me->bufPtr, _freqTable[freq], vol);
+				_mix->playSoundRaw(channel, me->bufPtr, getSoundFreq(freq), vol);
 			}
 		}
 		break;
@@ -764,17 +794,24 @@ void Script::snd_playSound(uint16_t resNum, uint8_t freq, uint8_t vol, uint8_t c
 
 void Script::snd_playMusic(uint16_t resNum, uint16_t delay, uint8_t pos) {
 	debug(DBG_SND, "snd_playMusic(0x%X, %d, %d)", resNum, delay, pos);
+	uint8_t loop = 0;
 	switch (_res->getDataType()) {
-	case Resource::DT_15TH_EDITION:
 	case Resource::DT_20TH_EDITION:
-	case Resource::DT_WIN31:
-		if (resNum == 0 || resNum == 5000) {
+		if (resNum == 5000) {
 			_mix->stopMusic();
-		} else {
+			break;
+		}
+		if (resNum >= 5001 && resNum <= 5010) {
+			loop = 1;
+		}
+		/* fall-through */
+	case Resource::DT_15TH_EDITION:
+	case Resource::DT_WIN31:
+		if (resNum != 0) {
 			char path[MAXPATHLEN];
 			const char *p = _res->getMusicPath(resNum, path, sizeof(path));
 			if (p) {
-				_mix->playMusic(p);
+				_mix->playMusic(p, loop);
 			}
 		}
 		break;
@@ -801,6 +838,12 @@ void Script::snd_playMusic(uint16_t resNum, uint16_t delay, uint8_t pos) {
 			_mix->stopSfxMusic();
 		}
 		break;
+	}
+}
+
+void Script::snd_preloadSound(uint16_t resNum, const uint8_t *data) {
+	if (_res->getDataType() == Resource::DT_3DO) {
+		_mix->preloadSoundAiff(resNum, data);
 	}
 }
 

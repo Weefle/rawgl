@@ -10,35 +10,30 @@
 #include "systemstub.h"
 #include "util.h"
 
-
 SfxPlayer::SfxPlayer(Resource *res)
-	: _res(res), _delay(0), _resNum(0) {
+	: _res(res), _delay(0) {
 	_playing = false;
 }
 
 void SfxPlayer::setEventsDelay(uint16_t delay) {
 	debug(DBG_SND, "SfxPlayer::setEventsDelay(%d)", delay);
-	_delay = delay * 60 / 7050;
+	_delay = delay;
 }
 
 void SfxPlayer::loadSfxModule(uint16_t resNum, uint16_t delay, uint8_t pos) {
 	debug(DBG_SND, "SfxPlayer::loadSfxModule(0x%X, %d, %d)", resNum, delay, pos);
 	MemEntry *me = &_res->_memList[resNum];
-	if (me->status == Resource::STATUS_LOADED && me->type == 1) {
-		_resNum = resNum;
+	if (me->status == Resource::STATUS_LOADED && me->type == Resource::RT_MUSIC) {
 		memset(&_sfxMod, 0, sizeof(SfxModule));
 		_sfxMod.curOrder = pos;
-		_sfxMod.numOrder = READ_BE_UINT16(me->bufPtr + 0x3E);
+		_sfxMod.numOrder = me->bufPtr[0x3F];
 		debug(DBG_SND, "SfxPlayer::loadSfxModule() curOrder = 0x%X numOrder = 0x%X", _sfxMod.curOrder, _sfxMod.numOrder);
-		for (int i = 0; i < 0x80; ++i) {
-			_sfxMod.orderTable[i] = *(me->bufPtr + 0x40 + i);
-		}
+		_sfxMod.orderTable = me->bufPtr + 0x40;
 		if (delay == 0) {
 			_delay = READ_BE_UINT16(me->bufPtr);
 		} else {
 			_delay = delay;
 		}
-		_delay = _delay * 60 / 7050;
 		_sfxMod.data = me->bufPtr + 0xC0;
 		debug(DBG_SND, "SfxPlayer::loadSfxModule() eventDelay = %d ms", _delay);
 		prepareInstruments(me->bufPtr + 2);
@@ -55,7 +50,7 @@ void SfxPlayer::prepareInstruments(const uint8_t *p) {
 		if (resNum != 0) {
 			ins->volume = READ_BE_UINT16(p);
 			MemEntry *me = &_res->_memList[resNum];
-			if (me->status == Resource::STATUS_LOADED && me->type == 0) {
+			if (me->status == Resource::STATUS_LOADED && me->type == Resource::RT_SOUND) {
 				ins->data = me->bufPtr;
 				debug(DBG_SND, "Loaded instrument 0x%X n=%d volume=%d", resNum, i, ins->volume);
 			} else {
@@ -73,7 +68,18 @@ void SfxPlayer::play(int rate) {
 	memset(_channels, 0, sizeof(_channels));
 }
 
-static void mixChannel(int8_t &s, SfxChannel *ch) {
+static int16_t toS16(int a) {
+	if (a <= -128) {
+		return -32768;
+	} else if (a >= 127) {
+		return 32767;
+	} else {
+		const uint8_t u8 = (a ^ 0x80);
+		return ((u8 << 8) | u8) - 32768;
+	}
+}
+
+static void mixChannel(int16_t &s, SfxChannel *ch) {
 	if (ch->sampleLen == 0) {
 		return;
 	}
@@ -81,32 +87,26 @@ static void mixChannel(int8_t &s, SfxChannel *ch) {
 	ch->pos.offset += ch->pos.inc;
 	int pos2 = pos1 + 1;
 	if (ch->sampleLoopLen != 0) {
-		if (pos1 == ch->sampleLoopPos + ch->sampleLoopLen - 1) {
+		if (pos1 >= ch->sampleLoopPos + ch->sampleLoopLen - 1) {
 			pos2 = ch->sampleLoopPos;
 			ch->pos.offset = pos2 << Frac::BITS;
 		}
 	} else {
-		if (pos1 == ch->sampleLen - 1) {
+		if (pos1 >= ch->sampleLen - 1) {
 			ch->sampleLen = 0;
 			return;
 		}
 	}
-	int16_t sample = ch->pos.interpolate((int8_t)ch->sampleData[pos1], (int8_t)ch->sampleData[pos2]);
-	sample = s + sample * ch->volume / 64;
-	if (sample < -128) {
-		sample = -128;
-	} else if (sample > 127) {
-		sample = 127;
-	}
-	s = (int8_t)sample;
+	int sample = ch->pos.interpolate((int8_t)ch->sampleData[pos1], (int8_t)ch->sampleData[pos2]);
+	sample = s + toS16(sample * ch->volume / 64);
+	s = (sample < -32768 ? -32768 : (sample > 32767 ? 32767 : sample));
 }
 
-void SfxPlayer::mixSamples(int8_t *buf, int len) {
-	memset(buf, 0, len * 2);
-	const int samplesPerTick = _rate / (1000 / _delay);
+void SfxPlayer::mixSamples(int16_t *buf, int len) {
 	while (len != 0) {
 		if (_samplesLeft == 0) {
 			handleEvents();
+			const int samplesPerTick = _rate * (_delay * 60 * 1000 / kPaulaFreq) / 1000;
 			_samplesLeft = samplesPerTick;
 		}
 		int count = _samplesLeft;
@@ -126,26 +126,9 @@ void SfxPlayer::mixSamples(int8_t *buf, int len) {
 	}
 }
 
-static void nr(const int8_t *in, int len, int8_t *out) {
-	static int prevL = 0;
-	static int prevR = 0;
-	for (int i = 0; i < len; ++i) {
-		const int sL = *in++ >> 1;
-		*out++ = sL + prevL;
-		prevL = sL;
-		const int sR = *in++ >> 1;
-		*out++ = sR + prevR;
-		prevR = sR;
-	}
-}
-
-void SfxPlayer::readSamples(int8_t *buf, int len) {
-	if (_delay == 0) {
-		memset(buf, 0, len * 2);
-	} else {
-		int8_t *bufin = (int8_t *)alloca(len * 2);
-		mixSamples(bufin, len);
-		nr(bufin, len, buf);
+void SfxPlayer::readSamples(int16_t *buf, int len) {
+	if (_delay != 0) {
+		mixSamples(buf, len / 2);
 	}
 }
 
@@ -157,7 +140,6 @@ void SfxPlayer::start() {
 void SfxPlayer::stop() {
 	debug(DBG_SND, "SfxPlayer::stop()");
 	_playing = false;
-	_resNum = 0;
 }
 
 void SfxPlayer::handleEvents() {
@@ -173,7 +155,6 @@ void SfxPlayer::handleEvents() {
 		_sfxMod.curPos = 0;
 		order = _sfxMod.curOrder + 1;
 		if (order == _sfxMod.numOrder) {
-			_resNum = 0;
 			_playing = false;
 		}
 		_sfxMod.curOrder = order;
@@ -224,24 +205,22 @@ void SfxPlayer::handlePattern(uint8_t channel, const uint8_t *data) {
 		}
 	}
 	if (pat.note_1 == 0xFFFD) {
-		debug(DBG_SND, "SfxPlayer::handlePattern() _scriptVars[0xF4] = 0x%X", pat.note_2);
+		debug(DBG_SND, "SfxPlayer::handlePattern() _syncVar = 0x%X", pat.note_2);
 		*_syncVar = pat.note_2;
-	} else if (pat.note_1 != 0) {
-		if (pat.note_1 == 0xFFFE) {
-			_channels[channel].sampleLen = 0;
-		} else if (pat.sampleBuffer != 0) {
-			assert(pat.note_1 >= 0x37 && pat.note_1 < 0x1000);
-			// convert amiga period value to hz
-			uint16_t freq = 7159092 / (pat.note_1 * 2);
-			debug(DBG_SND, "SfxPlayer::handlePattern() adding sample freq = 0x%X", freq);
-			SfxChannel *ch = &_channels[channel];
-			ch->sampleData = pat.sampleBuffer + pat.sampleStart;
-			ch->sampleLen = pat.sampleLen;
-			ch->sampleLoopPos = pat.loopPos;
-			ch->sampleLoopLen = pat.loopLen;
-			ch->volume = pat.sampleVolume;
-			ch->pos.offset = 0;
-			ch->pos.inc = (freq << Frac::BITS) / _rate;
-		}
+	} else if (pat.note_1 == 0xFFFE) {
+		_channels[channel].sampleLen = 0;
+	} else if (pat.note_1 != 0 && pat.sampleBuffer != 0) {
+		assert(pat.note_1 >= 0x37 && pat.note_1 < 0x1000);
+		// convert Amiga period value to hz
+		const int freq = kPaulaFreq / (pat.note_1 * 2);
+		debug(DBG_SND, "SfxPlayer::handlePattern() adding sample freq = 0x%X", freq);
+		SfxChannel *ch = &_channels[channel];
+		ch->sampleData = pat.sampleBuffer + pat.sampleStart;
+		ch->sampleLen = pat.sampleLen;
+		ch->sampleLoopPos = pat.loopPos;
+		ch->sampleLoopLen = pat.loopLen;
+		ch->volume = pat.sampleVolume;
+		ch->pos.offset = 0;
+		ch->pos.inc = (freq << Frac::BITS) / _rate;
 	}
 }
